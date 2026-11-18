@@ -10,9 +10,24 @@ router=APIRouter()
 def change(u,action,fn,supervisor=False):
  allow(u,*(['supervisor'] if supervisor else ['operator','supervisor']))
  with Session() as s:x=fn(s);audit(s,u,action,x);s.commit();return dump(x)
+def batch_view(b):
+ return {k:getattr(b,k) for k in ['id','version_no','kind','state','train_count','holdout_count','train_sha256','holdout_sha256','incumbent_version_no','metrics','decision','note','activated','error','actor','created_at','completed_at']}
+def model_state(s):
+ st=s.get(ModelState,1)
+ if not st or not st.active_batch_id:return {'active_batch_id':None,'label':'模拟标注基线','updated_at':st.updated_at if st else None}
+ b=s.get(TrainingBatch,st.active_batch_id)
+ return {'active_batch_id':st.active_batch_id,'label':f'试穿训练 v{b.version_no}','version_no':b.version_no,'updated_at':st.updated_at}
+def queue(name,record_id):
+ redis.from_url(os.environ['REDIS_URL'],socket_connect_timeout=1,socket_timeout=2).rpush(name,record_id)
 @router.get('/register')
 def register(u=Depends(current)):
- with Session() as s:return {n:[dump(x) for x in rows(s,c)] for n,c in [('consignors',Consignor),('agreements',Agreement),('amendments',Amendment),('garments',Garment),('measurements',Measurement),('profiles',FitProfile),('assessments',FitAssessment),('fittings',Fitting),('sales',Sale),('returns',Return),('payouts',Payout),('withdrawals',Withdrawal),('clock',Shop)]}
+ with Session() as s:
+  data={n:[dump(x) for x in rows(s,c)] for n,c in [('consignors',Consignor),('agreements',Agreement),('amendments',Amendment),('garments',Garment),('measurements',Measurement),('profiles',FitProfile),('assessments',FitAssessment),('fittings',Fitting),('sales',Sale),('returns',Return),('payouts',Payout),('withdrawals',Withdrawal),('clock',Shop)]}
+  data['tryon_labels']=[dump(x) for x in rows(s,TryOnLabel)]
+  data['holdout_profiles']=[dump(x) for x in rows(s,HoldoutProfile)]
+  data['training_batches']=[batch_view(x) for x in rows(s,TrainingBatch)]
+  data['model_state']=model_state(s)
+  return data
 @router.get('/audit')
 def audits(u=Depends(current)):
  with Session() as s:return [dump(x) for x in rows(s,Audit)]
@@ -28,10 +43,37 @@ def garments(d:GarmentIn,u=Depends(current)):return change(u,'入店验衣',lamb
 def measurements(d:MeasurementIn,u=Depends(current)):return change(u,'服饰实测',lambda s:fit.measure(s,d.model_dump()))
 @router.post('/profiles')
 def profiles(d:ProfileIn,u=Depends(current)):return change(u,'匿名体型',lambda s:fit.profile(s,d.model_dump()))
+@router.post('/tryon-labels')
+def tryon_labels(d:TryOnLabelIn,u=Depends(current)):
+ allow(u,'operator','supervisor')
+ with Session() as s:
+  x,corrected=fit.label(s,d.model_dump(),u['email']);audit(s,u,'试穿松紧更正' if corrected else '试穿松紧登记',x);s.commit();return dump(x)
+@router.post('/holdouts')
+def holdouts(d:HoldoutIn,u=Depends(current)):return change(u,'留出匿名体型',lambda s:fit.holdout(s,d.model_dump(),u['email']),True)
+@router.post('/training-batches')
+def training_batches(d:TrainingBatchIn,u=Depends(current)):
+ allow(u,'supervisor')
+ with Session() as s:
+  x=fit.start_batch(s,d.model_dump(),u['email']);audit(s,u,'发起模型训练',x);s.commit();view=dump(x)
+ try:queue('resale:train',view['id'])
+ except Exception:
+  with Session() as s:x=s.get(TrainingBatch,view['id']);x.state='failed';x.error='训练队列不可达，可重试';x.decision='未启用：训练队列不可达';s.commit()
+  raise HTTPException(503,'训练队列暂时不可达，批次已标记失败，可稍后重试')
+ return batch_view(x)
+@router.post('/training-batches/{id}/retry')
+def retry_batch(id:int,u=Depends(current)):
+ allow(u,'supervisor')
+ with Session() as s:
+  x=fit.retry_batch(s,id);audit(s,u,'重试模型训练',x);s.commit();view=batch_view(x)
+ try:queue('resale:train',view['id'])
+ except Exception:
+  with Session() as s:x=s.get(TrainingBatch,view['id']);x.state='failed';x.error='训练队列不可达，可重试';s.commit()
+  raise HTTPException(503,'训练队列暂时不可达，批次仍为失败，可稍后重试')
+ return view
 @router.post('/assessments')
 def assessments(d:AssessmentIn,u=Depends(current)):
  d=change(u,'适配计算',lambda s:fit.assess(s,d.model_dump()))
- try:redis.from_url(os.environ['REDIS_URL'],socket_connect_timeout=1,socket_timeout=2).rpush('resale:fit',d['id'])
+ try:queue('resale:fit',d['id'])
  except Exception:
   with Session() as s:x=s.get(FitAssessment,d['id']);x.state='failed';x.error='适配队列不可达，请重试';s.commit()
   raise HTTPException(503,'适配队列暂时不可达，记录已标记失败，可重新提交')

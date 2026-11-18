@@ -1,4 +1,4 @@
-from sqlalchemy import Column,Integer,String,Float,ForeignKey,JSON,CheckConstraint
+from sqlalchemy import Column,Integer,String,Float,ForeignKey,JSON,CheckConstraint,Boolean,UniqueConstraint
 from .database import Base
 class User(Base):
  __tablename__='users'
@@ -28,6 +28,19 @@ class FitProfile(Base):
 class FitAssessment(Base):
  __tablename__='assessments'
  id=Column(Integer,primary_key=True);garment_id=Column(Integer,ForeignKey('garments.id'),nullable=False);profile_id=Column(Integer,ForeignKey('profiles.id'),nullable=False);state=Column(String(20),default='queued');result=Column(JSON,nullable=True);error=Column(String(500),default='')
+class TryOnLabel(Base):
+ __tablename__='tryon_labels'
+ id=Column(Integer,primary_key=True);garment_id=Column(Integer,ForeignKey('garments.id'),nullable=False);profile_id=Column(Integer,ForeignKey('profiles.id'),nullable=False);label=Column(String(10),nullable=False);note=Column(String(300),default='',nullable=False);recorded_by=Column(String(160),nullable=False);updated_at=Column(String(32),nullable=False)
+ __table_args__=(UniqueConstraint('garment_id','profile_id',name='uq_tryon_label_garment_profile'),CheckConstraint("label IN ('合身','偏紧','偏松')"))
+class HoldoutProfile(Base):
+ __tablename__='holdout_profiles'
+ id=Column(Integer,primary_key=True);profile_id=Column(Integer,ForeignKey('profiles.id'),unique=True,nullable=False);reason=Column(String(300),nullable=False);marked_by=Column(String(160),nullable=False);marked_at=Column(String(32),nullable=False)
+class TrainingBatch(Base):
+ __tablename__='training_batches'
+ id=Column(Integer,primary_key=True);version_no=Column(Integer,unique=True,nullable=False);kind=Column(String(20),default='tryon',nullable=False);state=Column(String(20),default='queued',nullable=False);train_records=Column(JSON,nullable=False);holdout_records=Column(JSON,nullable=False);train_count=Column(Integer,default=0,nullable=False);holdout_count=Column(Integer,default=0,nullable=False);train_sha256=Column(String(64),default='',nullable=False);holdout_sha256=Column(String(64),default='',nullable=False);incumbent_version_no=Column(Integer,nullable=True);metrics=Column(JSON,nullable=True);decision=Column(String(500),default='',nullable=False);note=Column(String(300),default='',nullable=False);activated=Column(Boolean,default=False,nullable=False);error=Column(String(500),default='',nullable=False);actor=Column(String(160),nullable=False);created_at=Column(String(32),nullable=False);completed_at=Column(String(32),nullable=True)
+class ModelState(Base):
+ __tablename__='model_state'
+ id=Column(Integer,primary_key=True);active_batch_id=Column(Integer,ForeignKey('training_batches.id'),nullable=True);updated_at=Column(String(32),nullable=False)
 class Fitting(Base):
  __tablename__='fittings'
  id=Column(Integer,primary_key=True);garment_id=Column(Integer,ForeignKey('garments.id'),nullable=False);profile_id=Column(Integer,ForeignKey('profiles.id'),nullable=False);slot=Column(Integer,nullable=False);starts=Column(String(32),nullable=False);ends=Column(String(32),nullable=False);state=Column(String(20),default='reserved',nullable=False)
